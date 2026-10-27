@@ -1,5 +1,5 @@
 """OpenCV 5 tools + agent logic for a voice-guided reader (medicine, food expiry, bills, forms) for low-vision users."""
-import re, datetime, calendar, cv2, numpy as np, pytesseract
+import re, time, difflib, datetime, calendar, cv2, numpy as np, pytesseract
 from pytesseract import Output
 
 TH = dict(blur=60.0, dark=60, glare=0.03, cover_min=0.30, cover_max=0.92, conf=60, item_conf=55)
@@ -183,7 +183,7 @@ def _dates(lines, due_mode=False):
 
 def extract(mode, lines):
     if mode in ("medicine", "food"):
-        return [d for d in _dates(lines) if d["kind"] != "made"] or []
+        return [d for d in _dates(lines) if d["kind"] != "made"] or _loose(" ".join(l for l, _ in lines))
     if mode == "bill":
         items = _dates(lines, True)
         for txt, conf in lines:
@@ -201,7 +201,7 @@ def extract(mode, lines):
 
 def _detect(lines):
     t = " ".join(l for l, _ in lines).lower()
-    sc = dict(medicine=sum(k in t for k in ("tablet", "capsule", " mg", "dosage", "batch no")),
+    sc = dict(medicine=3 * sum(k in t for k in ("tablet", "tabs", "capsule", " mg", "dosage", "batch no", "b.no", "syrup")) + sum(k in t for k in (" rx", "release", " ip")),
               food=sum(k in t for k in ("exp", "best before", "mfg", "mrp", "use by", "ingredients", "net weight", "net wt", "nutrition", "kcal", "manufactured")),
               bill=sum(k in t for k in ("invoice", "total", "bill", "gst", "receipt", "amount due")),
               form=sum(k in t for k in ("signature", "date of birth", "applicant", "father", "mobile no", "application")))
@@ -276,6 +276,13 @@ def _ink_scan(img, mode):
         return [dict(kind="date", value=val, conf=min(c, 50))], (x, y, w, h)
     return [], (x, y, w, h)
 
+def _pretty(val):
+    """'FEB 2028' -> 'February 2028' so it is spoken clearly; numeric dates stay as they are."""
+    m = re.fullmatch(r"([A-Za-z]{3,9})[\s.\-/]*(\d{4})", val.strip())
+    if m and m.group(1)[:3].lower() in MONTHS:
+        return f"{calendar.month_name[MONTHS[m.group(1)[:3].lower()]]} {m.group(2)}"
+    return val
+
 def _summary(mode, items, status, mean):
     if status == "NEED_MORE": return MSG["turn"]
     if status == "NEED_CLOSER": return MSG["closer_date"]
@@ -283,8 +290,16 @@ def _summary(mode, items, status, mean):
     first = lambda k: next((i["value"] for i in items if i["kind"] == k), None)
     if mode in ("medicine", "food"):
         k = "expiry" if first("expiry") else "date"; val = first(k)
-        en = f"{'Expiry date' if k == 'expiry' else 'A date, not labelled'}: {val}."
-        ta = f"{'காலாவதி தேதி' if k == 'expiry' else 'ஒரு தேதி'}: {val}."
+        pv = _pretty(val)
+        en = f"{'Expiry date' if k == 'expiry' else 'A date, not labelled'}: {pv}."
+        ta = f"{'காலாவதி தேதி' if k == 'expiry' else 'ஒரு தேதி'}: {pv}."
+        if mode == "medicine":
+            ni = next((i for i in items if i["kind"] == "name"), None)
+            if ni and ni["conf"] >= 60: en = f"Medicine: {ni['value']}. " + en; ta = f"மருந்து: {ni['value']}. " + ta
+            elif ni:
+                en = f"Medicine name only partly read: {ni['value']}. Show me the top of the strip for the full name. " + en
+                ta = f"மருந்தின் பெயர் முழுமையாகத் தெரியவில்லை: {ni['value']}. முழுப் பெயருக்கு பட்டையின் மேல்பகுதியைக் காட்டுங்கள். " + ta
+            else: en = "I could not read the medicine name. " + en; ta = "மருந்தின் பெயரைப் படிக்க முடியவில்லை. " + ta
         d = _parse_date(val)
         if d and d < datetime.date.today(): en += " Warning: this item has expired. Do not use it."; ta += " எச்சரிக்கை: இது காலாவதியாகிவிட்டது. பயன்படுத்த வேண்டாம்."
         if mode == "medicine": en += " Please confirm with your pharmacist."; ta += " மருந்தாளரிடம் உறுதிசெய்யவும்."
@@ -309,6 +324,159 @@ def _tile_scan(g, n=3):
             out += _lines(_ocr(tile, 11))
     return out
 
+# ---------- forgiving date reading, tilt correction, medicine name ----------
+def _rot(img, a):
+    """Rotate by a small angle (degrees) keeping the whole picture; text on foil is rarely perfectly level."""
+    h, w = img.shape[:2]; M = cv2.getRotationMatrix2D((w / 2, h / 2), a, 1.0)
+    cs, sn = abs(M[0, 0]), abs(M[0, 1]); nw, nh = int(h * sn + w * cs), int(h * cs + w * sn)
+    M[0, 2] += nw / 2 - w / 2; M[1, 2] += nh / 2 - h / 2
+    return cv2.warpAffine(img, M, (nw, nh), flags=cv2.INTER_CUBIC, borderValue=255)
+
+def _month3(tok):
+    """OCR slips (FER -> FEB, HAR -> MAR) are forgiven; returns 'feb' etc. or None."""
+    t = re.sub(r"[^a-z]", "", tok.lower())[:3]
+    if len(t) < 3: return None
+    if t in MONTHS: return t
+    m = difflib.get_close_matches(t, list(MONTHS), 1, 0.6)
+    return m[0] if m else None
+
+def _near_label(text):
+    """Inside a crop taken right beside the EXP label: '<month> <year>' or 'mm/yyyy' without needing the word EXP."""
+    out = []; t = text.translate(str.maketrans("OolI|", "00111"))
+    for m in re.finditer(r"([A-Za-z]{3,9})[\W_]{0,4}(20\s?[123]\s?\d)\b", t):
+        mo = _month3(m.group(1))
+        if mo and difflib.SequenceMatcher(None, re.sub(r"[^a-z]", "", m.group(1).lower())[:3], mo).ratio() >= .66:
+            out.append(dict(kind="expiry", value=f"{mo.upper()} {re.sub(chr(92)+'s', '', m.group(2))}", conf=60))
+    for m in re.finditer(r"\b(0?[1-9]|1[0-2])\s?[/.\-]\s?(20\s?[123]\s?\d)\b", t):
+        out.append(dict(kind="expiry", value=f"{int(m.group(1)):02d}/{re.sub(chr(92)+'s', '', m.group(2))}", conf=60))
+    return out
+
+_EXPA = re.compile(r"e\\s?x\\s?p[a-z]*|use\\s*by|best\\s*before|bbe", re.I)
+def _loose(text):
+    """Find 'EXP <month> <year>' even when OCR put spaces/line-breaks inside it. Only reads what is printed."""
+    out = []
+    for a in _EXPA.finditer(text):
+        tail = text[a.end():a.end() + 24].translate(str.maketrans("OolI|", "00111"))
+        m = re.match(r"[\\W_]{0,4}([A-Za-z]{3,9}|\\d{1,2})[\\W_]{0,4}((?:20)?\\s?\\d\\s?\\d)", tail)
+        if not m: continue
+        yr = re.sub(r"\\s", "", m.group(2)); yr = int(yr) + (2000 if len(yr) == 2 else 0)
+        if not 2015 <= yr <= 2039: continue
+        if m.group(1).isdigit():
+            mo = int(m.group(1))
+            if not 1 <= mo <= 12: continue
+            out.append(dict(kind="expiry", value=f"{mo:02d}/{yr}", conf=60))
+        else:
+            mo = _month3(m.group(1))
+            if mo: out.append(dict(kind="expiry", value=f"{mo.upper()} {yr}", conf=60))
+    return out
+
+def _ym(val):
+    """Canonical (year, month) of a date string, so 'FEB. 2028', 'FEB 2028' and '02/2028' count as the SAME reading."""
+    d = _parse_date(val)
+    return (d.year, d.month) if d else None
+
+def _exp_scan(img, mode, trace, budget=25):
+    """Find the EXP label (tilting the picture a few degrees if needed), zoom on the text beside it,
+    read it several ways and VOTE. Only words on the EXP line are used; a date read from the line above
+    (manufacture date) is remembered so it can never be mistaken for the expiry."""
+    t0 = time.time(); votes = {}; made = set(); seen = False
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # plain gray, then flatten foil sheen (contrast-enhancing hides the label)
+    f = min(2.5, 2800 / max(g.shape)); base = cv2.resize(g, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC) if f > 1 else g
+    for ang in (0, 3, -3, 6, -6):
+        if time.time() - t0 > budget: break
+        r = _flat(_rot(base, ang) if ang else base)
+        anchors = [w for w in _ocr(r, 6) if re.sub(r"[^a-z]", "", w["t"].lower()).startswith(("exp", "xp"))]
+        for a in anchors[:3]:
+            h = a["h"]; seen = True; y0 = max(0, a["y"] - int(h * 1.8))
+            crop = r[y0:a["y"] + int(h * 2.0), max(0, a["x"] - h // 2):a["x"] + a["w"] + h * 14]
+            if crop.size == 0: continue
+            c3 = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+            yc = (a["y"] + h / 2 - y0) * 3; band = h * 3 * 0.65
+            for v in (c3, cv2.threshold(c3, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]):
+                for psm in (6, 11):
+                    ws = _ocr(v, psm)
+                    on = " ".join(w["t"] for w in sorted((w for w in ws if abs(w["y"] + w["h"] / 2 - yc) <= band), key=lambda w: w["x"]))
+                    above = " ".join(w["t"] for w in sorted((w for w in ws if w["y"] + w["h"] / 2 < yc - band), key=lambda w: (w["y"], w["x"])))
+                    for d in _near_label(above) + _loose(above) + [x for x in _dates([(above, 60)]) if x["kind"] == "made"]:
+                        if _ym(d["value"]): made.add(_ym(d["value"]))
+                    for d in _near_label(on) + _loose(on) + [x for x in _dates([(on, 60)]) if x["kind"] != "made"]:
+                        k = _ym(d["value"])
+                        if k: e = votes.setdefault(k, [0, d["value"], 0]); e[0] += 1; e[2] = max(e[2], d["conf"])
+        top = max((v[0] for v in votes.values()), default=0)
+        if top >= 3: break
+    if seen:
+        trace.append("Saw the EXP label. Readings on the EXP line: " + (", ".join(f"{k[1]:02d}/{k[0]} x{v[0]}" for k, v in sorted(votes.items(), key=lambda kv: -kv[1][0])[:4]) or "none")
+                     + (f". Manufacture date seen: {', '.join(f'{m:02d}/{y}' for y, m in sorted(made))}" if made else ""))
+    # an expiry cannot be the same month as (or earlier than) the manufacture date printed above it
+    ok = {k: v for k, v in votes.items() if not any(k <= m for m in made)}
+    if len(ok) < len(votes): trace.append("Ignored a reading that matched the manufacture date")
+    if not ok: return [], seen
+    k, (n, val, c) = max(ok.items(), key=lambda kv: (kv[1][0], kv[0]))
+    rival = max((v[0] for kk, v in ok.items() if kk != k), default=0)
+    if n < 2 or n < 2 * rival:  # a lonely or contested reading is not trusted: a wrong digit could give a false 'expired' or 'safe'
+        trace.append(f"Reading '{val}' x{n} is not clear enough (rival x{rival}): asking to move closer")
+        return [], seen
+    trace.append(f"'{val}' read {n} times: accepted")
+    return [dict(kind="expiry", value=val, conf=max(c, 70))], seen
+
+DRUGS = """paracetamol acetaminophen ibuprofen diclofenac aspirin aceclofenac naproxen etoricoxib nimesulide tramadol amoxicillin
+azithromycin clarithromycin ciprofloxacin ofloxacin levofloxacin norfloxacin doxycycline cefixime cefpodoxime cefuroxime
+metronidazole ornidazole fluconazole albendazole ivermectin metformin glimepiride gliclazide glibenclamide pioglitazone
+sitagliptin vildagliptin teneligliptin atorvastatin rosuvastatin simvastatin ezetimibe fenofibrate amlodipine nifedipine
+cilnidipine telmisartan losartan olmesartan valsartan ramipril enalapril lisinopril metoprolol atenolol bisoprolol carvedilol
+propranolol nebivolol clopidogrel warfarin furosemide torsemide spironolactone hydrochlorothiazide chlorthalidone indapamide
+pantoprazole omeprazole rabeprazole esomeprazole lansoprazole ranitidine famotidine domperidone ondansetron cetirizine
+levocetirizine montelukast fexofenadine loratadine salbutamol levothyroxine thyroxine prednisolone deflazacort dexamethasone
+methylprednisolone gabapentin pregabalin amitriptyline escitalopram sertraline fluoxetine clonazepam alprazolam zolpidem
+levetiracetam valproate carbamazepine phenytoin topiramate lacosamide risperidone olanzapine quetiapine aripiprazole
+haloperidol donepezil memantine ropinirole levodopa carbidopa tamsulosin finasteride sildenafil tadalafil diltiazem
+isosorbide digoxin amiodarone ranolazine trimetazidine allopurinol febuxostat colchicine hydroxychloroquine methotrexate
+letrozole tamoxifen rifampicin isoniazid pyrazinamide ethambutol cyanocobalamin methylcobalamin lactulose bisacodyl
+bromhexine ambroxol guaifenesin dextromethorphan chlorpheniramine""".split()
+SALTS = ("succinate", "tartrate", "hydrochloride", "sodium", "maleate", "besylate", "mesylate", "fumarate", "phosphate",
+         "sulphate", "sulfate", "citrate", "acetate", "calcium", "potassium")
+
+def _name_from_words(tokens):
+    """Fuzzy-match OCR words to common medicine names / salts (so 'Metoprolo1' still means Metoprolol)."""
+    toks = [re.sub(r"[^a-z]", "", t.lower()) for t in tokens]; toks = [t for t in toks if len(t) >= 5]
+    drug = salt = None; ext = rel = False
+    for t in toks:
+        if not drug:
+            m = difflib.get_close_matches(t, DRUGS, 1, 0.82)
+            if m: drug = m[0]; continue
+        if not salt:
+            m = difflib.get_close_matches(t, SALTS, 1, 0.78)
+            if m: salt = m[0]; continue
+        if difflib.get_close_matches(t, ["extended", "sustained", "prolonged"], 1, 0.78): ext = True
+        elif difflib.get_close_matches(t, ["release", "retard"], 1, 0.78): rel = True
+    if not drug and not (salt and ext and rel): return None, 0  # a lone salt word can be noise: say nothing rather than mislead
+    parts = [p.title() for p in (drug, salt) if p] + (["Extended Release"] if ext and rel else [])
+    return " ".join(parts), 60 if drug else 40  # 40 = partly read (no medicine name seen, only its salt/form)
+
+def _flat(g):
+    """Remove the uneven background (foil sheen, shadows) so dark printed text stands out: dark-on-white result."""
+    bgk = cv2.GaussianBlur(g, (0, 0), 25)
+    return 255 - cv2.normalize(cv2.subtract(bgk, g), None, 0, 255, cv2.NORM_MINMAX)
+
+def _name_scan(img, words, trace, budget=25):
+    """Medicine names are often printed sideways. Read the words we already have, then re-read the picture
+    turned 90 and 270 degrees (background flattened) and fuzzy-match the words to known medicine names."""
+    t0 = time.time(); toks = [w["t"] for w in words]
+    nm, c = _name_from_words(toks)
+    if nm and c >= 60: return nm, c
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    f = 1600 / max(g.shape); g = cv2.resize(g, None, fx=f, fy=f, interpolation=cv2.INTER_AREA if f < 1 else cv2.INTER_CUBIC)
+    for code in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE):
+        r = _flat(cv2.rotate(g, code))
+        for psm in (6, 11):
+            if time.time() - t0 > budget: break
+            toks += [x["t"] for x in _ocr(r, psm) if x["c"] >= 25]
+        nm2, c2 = _name_from_words(toks)
+        if nm2 and c2 >= 60: nm, c = nm2, c2; break
+        if nm2 and c2 > c: nm, c = nm2, c2
+    if nm: trace.append(f"Medicine name read from printed text (also tried sideways text): '{nm}'")
+    return nm, c
+
 ROT = [(90, cv2.ROTATE_90_CLOCKWISE), (180, cv2.ROTATE_180), (270, cv2.ROTATE_90_COUNTERCLOCKWISE)]
 
 def read_document(img, mode="auto"):
@@ -329,7 +497,8 @@ def read_document(img, mode="auto"):
     trace.append(f"Pass 1 (contrast-enhanced): {len(words)} words")
     _fix_weak(g, words, trace)
     lines = _lines(words)
-    if mode == "auto":
+    auto_mode = mode == "auto"; pre_name = None
+    if auto_mode:
         mode = _detect(lines); trace.append(f"Document type guessed: {mode}")
     items = extract(mode, lines)
     need = mode in ("medicine", "food"); closer = False
@@ -338,6 +507,10 @@ def read_document(img, mode="auto"):
         ws = _ocr(g, 11); l2 = _lines(ws); items = extract(mode, l2)
         trace.append(f"Re-look with sparse-text mode: {'DATE FOUND' if items else 'nothing'}")
         if items: words, lines = ws, l2
+        if not items:
+            items, label_seen = _exp_scan(img, mode, trace)
+            trace.append(f"Re-look with EXP-label zoom + tilt correction: {'DATE FOUND' if items else 'nothing'}")
+            if not items and label_seen: closer = True
         if not items:
             items, box = _ink_scan(img, mode)
             if box: trace.append(f"Found a coloured-ink stamp region {box[2]}x{box[3]}px: tried 4 orientations x 3 cleanups -> {'DATE FOUND' if items else 'nothing'}")
@@ -356,10 +529,17 @@ def read_document(img, mode="auto"):
                 l4 = _lines(_ocr(cv2.rotate(gs, c), 6)); items = extract(mode, l4)
                 trace.append(f"Re-look with rotated {a} degrees: {'DATE FOUND' if items else 'nothing'}")
                 if items: lines = l4; break
+    if auto_mode and mode == "food" and items and any(i["kind"] == "expiry" for i in items):
+        nm0, nc0 = _name_scan(img, words, trace)
+        pre_name = (nm0, nc0)
+        if nm0 and nc0 >= 60: mode = "medicine"; trace.append("Sideways text names a medicine: treating this as a medicine")
     weak = sum(1 for w in words if w["c"] < TH["conf"] and len(w["t"]) > 1)
     mean = round(sum(w["c"] for w in words) / len(words), 1) if words else 0.0
     if need:
         status = "NEED_CLOSER" if closer else "NEED_MORE" if not items else "DONE" if min(i["conf"] for i in items) >= TH["item_conf"] else "UNSURE"
+        if items and mode == "medicine":
+            nm, nc = pre_name if pre_name else _name_scan(img, words, trace)
+            if nm: items.insert(0, dict(kind="name", value=nm, conf=nc))
     else:
         bad = len(words) < 3 or weak / len(words) > 0.25 or not items
         status = "UNSURE" if bad or min(i["conf"] for i in items) < TH["item_conf"] else "DONE"
