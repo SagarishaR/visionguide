@@ -1,0 +1,60 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VisionGuide</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#111;color:#fff;text-align:center}
+video{width:100%;max-width:480px;border-radius:12px;background:#000}
+button,select{font-size:1.4rem;padding:14px 22px;margin:8px;border-radius:10px;border:0}
+button{background:#ffd54a;font-weight:700}
+#msg{font-size:2rem;font-weight:700;min-height:3em;margin:12px 0}
+#out{font-size:2.2rem;line-height:1.5;white-space:pre-wrap;text-align:left;background:#222;padding:16px;border-radius:12px;display:none}
+#trace{font-size:.9rem;text-align:left;color:#9ad;white-space:pre-wrap}
+</style></head><body>
+<h1>VisionGuide</h1>
+<video id="v" autoplay playsinline muted></video><canvas id="c" hidden></canvas>
+<div><button id="go">Start</button>
+<select id="mode"><option value="auto">Auto-detect</option><option value="medicine">Medicine</option><option value="food">Food expiry</option><option value="bill">Bill</option><option value="form">Form</option></select>
+<select id="lang"><option value="en">English</option><option value="ta">தமிழ்</option></select></div>
+<div>or upload a photo: <input type="file" id="up" accept="image/*" capture="environment"></div>
+<div id="msg" aria-live="assertive">Press Start, then point the camera at the medicine box.</div>
+<div id="out"></div><pre id="trace"></pre>
+<script>
+const $=id=>document.getElementById(id), v=$('v'), c=$('c');
+let timer=null, last='', lastT=0, okCount=0, busy=false, attempts=0;
+const L=()=>$('lang').value, sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function say(t){speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang=L()==='ta'?'ta-IN':'en-IN';speechSynthesis.speak(u);}
+function snap(w,q){const s=w/v.videoWidth;c.width=w;c.height=v.videoHeight*s;c.getContext('2d').drawImage(v,0,0,c.width,c.height);return new Promise(r=>c.toBlob(r,'image/jpeg',q));}
+async function post(url,blob){const f=new FormData();f.append('frame',blob,'f.jpg');f.append('mode',$('mode').value);return (await fetch(url,{method:'POST',body:f})).json();}
+function startLoop(){okCount=0;if(timer)clearInterval(timer);timer=setInterval(tick,1200);}
+function stopLoop(){clearInterval(timer);timer=null;}
+async function show(r){
+  const items=r.items.map(i=>i.kind+': '+i.value).join('\n');
+  $('out').style.display='block'; $('out').textContent=(items+'\n\n'+r.text).trim();
+  $('trace').textContent=r.trace.join('\n');
+  const m=L()==='ta'?r.summary_ta:r.summary_en; $('msg').textContent=m; say(m);
+}
+async function handle(r){
+  await show(r);
+  if((r.status==='NEED_MORE'||r.status==='NEED_CLOSER')&&v.srcObject){
+    attempts++;
+    if(attempts<4){await sleep(r.status==='NEED_CLOSER'?5000:6000);$('msg').textContent='Looking again...';startLoop();}
+    else{const m=L()==='ta'?'தேதியைக் கண்டுபிடிக்க முடியவில்லை. யாரிடமாவது கேளுங்கள்.':'I could not find the date. Please ask someone to check.';$('msg').textContent=m;say(m);}
+  }
+}
+async function tick(){
+  if(busy||!v.videoWidth)return; busy=true;
+  try{
+    const r=await post('/analyze',await snap(480,.6));
+    $('msg').textContent=r[L()];
+    const now=Date.now();
+    if(r.key!==last||now-lastT>4000){say(r[L()]);last=r.key;lastT=now;}
+    okCount=r.key==='ok'?okCount+1:0;
+    if(okCount>=3){stopLoop();$('msg').textContent='Reading...';await handle(await post('/read',await snap(1600,.92)));}
+  }finally{busy=false;}
+}
+$('go').onclick=async()=>{
+  try{v.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});}catch(e){alert('Camera error: '+e.message+'. Use localhost/HTTPS or the upload box.');return;}
+  attempts=0;$('out').style.display='none';$('trace').textContent='';startLoop();
+  say(L()==='ta'?'தொடங்குகிறது':'Starting. Point the camera at the item.');
+};
+$('up').onchange=async e=>{$('msg').textContent='Reading...';attempts=9;await handle(await post('/read',e.target.files[0]));};
+</script></body></html>

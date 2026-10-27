@@ -1,0 +1,6 @@
+opencv-python-headless>=5.0,<6
+numpy
+flask==3.0.3
+gunicorn==22.0.0
+pytesseract==0.3.13
+boto3
