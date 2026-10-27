@@ -1,60 +1,172 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>VisionGuide</title>
 <style>
-body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#111;color:#fff;text-align:center}
-video{width:100%;max-width:480px;border-radius:12px;background:#000}
-button,select{font-size:1.4rem;padding:14px 22px;margin:8px;border-radius:10px;border:0}
-button{background:#ffd54a;font-weight:700}
-#msg{font-size:2rem;font-weight:700;min-height:3em;margin:12px 0}
-#out{font-size:2.2rem;line-height:1.5;white-space:pre-wrap;text-align:left;background:#222;padding:16px;border-radius:12px;display:none}
-#trace{font-size:.9rem;text-align:left;color:#9ad;white-space:pre-wrap}
-</style></head><body>
+:root{--fs:1.35rem}
+[data-theme="dark"]{--bg:#000;--fg:#fff;--muted:#ffe27a;--panel:#141414;--line:#fff;--btn:#ffd54a;--btnfg:#000;--btn2:#000;--btn2fg:#ffd54a}
+[data-theme="light"]{--bg:#fff;--fg:#000;--muted:#222;--panel:#f2f2f2;--line:#000;--btn:#0a2a8a;--btnfg:#fff;--btn2:#fff;--btn2fg:#0a2a8a}
+*{box-sizing:border-box}
+html{font-size:100%}
+body{margin:0;padding:18px;background:var(--bg);color:var(--fg);font-family:Verdana,Arial,Helvetica,sans-serif;font-size:var(--fs);line-height:1.6;max-width:760px;margin-inline:auto}
+h1{font-size:2.2rem;margin:.2em 0 .1em;text-align:center}
+.sub{text-align:center;margin:0 0 18px;color:var(--muted)}
+.bar{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:18px}
+button,select,.filebtn{font:inherit;font-weight:700;min-height:68px;padding:12px 20px;border-radius:14px;border:4px solid var(--line);cursor:pointer}
+.primary,.filebtn{background:var(--btn);color:var(--btnfg)}
+.secondary{background:var(--btn2);color:var(--btn2fg)}
+.filebtn{display:flex;align-items:center;justify-content:center;text-align:center}
+.big{width:100%;margin:8px 0}
+select{width:100%;background:var(--panel);color:var(--fg)}
+label.lbl{display:block;font-weight:700;margin:16px 0 6px}
+:focus-visible{outline:6px solid #00b0ff;outline-offset:4px}
+input[type=file]{position:absolute;opacity:0;width:1px;height:1px}
+input[type=file]:focus-visible + .filebtn{outline:6px solid #00b0ff;outline-offset:4px}
+.cam{display:none;margin:14px 0;text-align:center}
+.cam.on{display:block}
+video{width:100%;max-width:560px;border-radius:14px;border:4px solid var(--line);background:#000}
+.hint{background:var(--panel);border:4px solid var(--line);border-radius:14px;padding:14px 18px;margin:18px 0}
+#card{border-radius:18px;border:8px solid var(--line);padding:22px;margin:18px 0;min-height:9em;display:flex;flex-direction:column;gap:10px;background:var(--panel)}
+#card .tag{font-size:2rem;font-weight:900;letter-spacing:.04em;display:flex;align-items:center;gap:14px}
+#card .icon{font-size:3rem;line-height:1}
+#card .txt{font-size:calc(var(--fs) * 1.5);font-weight:700;line-height:1.45}
+#card.ok{background:#0b5d1e;color:#fff;border-color:#b9f6ca}
+#card.warn{background:#ffd54a;color:#000;border-color:#000}
+#card.bad{background:#b00020;color:#fff;border-color:#fff}
+#card.info{background:#0d3b8c;color:#fff;border-color:#fff}
+details{background:var(--panel);border:4px solid var(--line);border-radius:14px;padding:12px 16px;margin-top:18px}
+summary{font-weight:700;cursor:pointer;min-height:48px;display:flex;align-items:center}
+pre{white-space:pre-wrap;font-size:1rem;color:var(--fg);font-family:Consolas,monospace}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row > *{flex:1 1 180px}
+</style>
+</head>
+<body>
 <h1>VisionGuide</h1>
-<video id="v" autoplay playsinline muted></video><canvas id="c" hidden></canvas>
-<div><button id="go">Start</button>
-<select id="mode"><option value="auto">Auto-detect</option><option value="medicine">Medicine</option><option value="food">Food expiry</option><option value="bill">Bill</option><option value="form">Form</option></select>
-<select id="lang"><option value="en">English</option><option value="ta">தமிழ்</option></select></div>
-<div>or upload a photo: <input type="file" id="up" accept="image/*" capture="environment"></div>
-<div id="msg" aria-live="assertive">Press Start, then point the camera at the medicine box.</div>
-<div id="out"></div><pre id="trace"></pre>
+<p class="sub">Reads dates and labels aloud</p>
+
+<div class="bar" role="group" aria-label="Display settings">
+  <button class="secondary" id="smaller" aria-label="Make text smaller">A−</button>
+  <button class="secondary" id="bigger" aria-label="Make text bigger">A+</button>
+  <button class="secondary" id="theme" aria-label="Switch between dark and light display">Dark / Light</button>
+</div>
+
+<label class="lbl" for="mode">1. What is it?</label>
+<select id="mode">
+  <option value="auto">Auto-detect</option>
+  <option value="medicine">Medicine</option>
+  <option value="food">Food expiry</option>
+  <option value="bill">Bill</option>
+  <option value="form">Form</option>
+</select>
+
+<label class="lbl" for="lang">2. Language</label>
+<select id="lang">
+  <option value="en">English</option>
+  <option value="ta">தமிழ்</option>
+</select>
+
+<p class="lbl">3. Choose how to read</p>
+<button class="primary big" id="go">Start camera</button>
+<div class="cam" id="camwrap"><video id="v" autoplay playsinline muted disablepictureinpicture aria-label="Camera view"></video></div>
+<canvas id="c" hidden></canvas>
+
+<input type="file" id="up" accept="image/*" capture="environment">
+<label for="up" class="filebtn big" id="uplbl">Take or upload a photo</label>
+
+<div id="card" class="info" role="status" aria-live="assertive" aria-atomic="true">
+  <div class="tag"><span class="icon" id="icon" aria-hidden="true">ℹ</span><span id="tag">READY</span></div>
+  <div class="txt" id="msg">Choose what it is, then press Start camera or take a photo.</div>
+</div>
+
+<button class="secondary big" id="again">Read aloud again</button>
+
+<details>
+  <summary>Technical details (for judges)</summary>
+  <pre id="out"></pre>
+  <pre id="trace"></pre>
+</details>
+
 <script>
 const $=id=>document.getElementById(id), v=$('v'), c=$('c');
-let timer=null, last='', lastT=0, okCount=0, busy=false, attempts=0;
+let timer=null, last='', lastT=0, okCount=0, busy=false, attempts=0, lastSpoken='';
 const L=()=>$('lang').value, sleep=ms=>new Promise(r=>setTimeout(r,ms));
-function say(t){speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang=L()==='ta'?'ta-IN':'en-IN';speechSynthesis.speak(u);}
+
+/* ---------- display settings (text size, theme) ---------- */
+let size=1.35;
+try{size=parseFloat(localStorage.getItem('vg_size'))||1.35;if(localStorage.getItem('vg_theme'))document.documentElement.dataset.theme=localStorage.getItem('vg_theme');}catch(e){}
+function applySize(){size=Math.min(2.4,Math.max(1,size));document.documentElement.style.setProperty('--fs',size+'rem');try{localStorage.setItem('vg_size',size)}catch(e){}}
+applySize();
+$('bigger').onclick=()=>{size+=.15;applySize();};
+$('smaller').onclick=()=>{size-=.15;applySize();};
+$('theme').onclick=()=>{const t=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=t;try{localStorage.setItem('vg_theme',t)}catch(e){}};
+
+/* ---------- result card ---------- */
+const STATE={
+  ok:{icon:'✔',tag:'DONE'}, safe:{icon:'✔',tag:'IN DATE'},
+  warn:{icon:'⚠',tag:'NOT SURE'}, bad:{icon:'✖',tag:'EXPIRED'},
+  info:{icon:'ℹ',tag:'GUIDE'}, wait:{icon:'…',tag:'WORKING'}
+};
+function card(kind,text,tag){
+  const s=STATE[kind]||STATE.info, el=$('card');
+  el.className=(kind==='safe'||kind==='ok')?'ok':kind==='wait'?'info':kind;
+  $('icon').textContent=s.icon; $('tag').textContent=tag||s.tag; $('msg').textContent=text;
+}
+function say(t){lastSpoken=t;speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang=L()==='ta'?'ta-IN':'en-IN';u.rate=.9;speechSynthesis.speak(u);}
+$('again').onclick=()=>{if(lastSpoken)say(lastSpoken);};
+
+/* ---------- camera + server calls (logic unchanged) ---------- */
 function snap(w,q){const s=w/v.videoWidth;c.width=w;c.height=v.videoHeight*s;c.getContext('2d').drawImage(v,0,0,c.width,c.height);return new Promise(r=>c.toBlob(r,'image/jpeg',q));}
 async function post(url,blob){const f=new FormData();f.append('frame',blob,'f.jpg');f.append('mode',$('mode').value);return (await fetch(url,{method:'POST',body:f})).json();}
 function startLoop(){okCount=0;if(timer)clearInterval(timer);timer=setInterval(tick,1200);}
 function stopLoop(){clearInterval(timer);timer=null;}
+
 async function show(r){
-  const items=r.items.map(i=>i.kind+': '+i.value).join('\n');
-  $('out').style.display='block'; $('out').textContent=(items+'\n\n'+r.text).trim();
+  $('out').textContent=(r.items.map(i=>i.kind+': '+i.value).join('\n')+'\n\n'+r.text).trim();
   $('trace').textContent=r.trace.join('\n');
-  const m=L()==='ta'?r.summary_ta:r.summary_en; $('msg').textContent=m; say(m);
+  const m=L()==='ta'?r.summary_ta:r.summary_en;
+  const expired=/expired/i.test(r.summary_en||'');
+  if(expired) card('bad',m,'EXPIRED');
+  else if(r.status==='DONE') card(['medicine','food'].includes(r.mode)?'safe':'ok',m,['medicine','food'].includes(r.mode)?'DATE FOUND':'DONE');
+  else card('warn',m,r.status==='NEED_CLOSER'?'MOVE CLOSER':r.status==='NEED_MORE'?'TURN ITEM':'NOT SURE');
+  say(m);
 }
 async function handle(r){
   await show(r);
   if((r.status==='NEED_MORE'||r.status==='NEED_CLOSER')&&v.srcObject){
     attempts++;
-    if(attempts<4){await sleep(r.status==='NEED_CLOSER'?5000:6000);$('msg').textContent='Looking again...';startLoop();}
-    else{const m=L()==='ta'?'தேதியைக் கண்டுபிடிக்க முடியவில்லை. யாரிடமாவது கேளுங்கள்.':'I could not find the date. Please ask someone to check.';$('msg').textContent=m;say(m);}
+    if(attempts<4){await sleep(r.status==='NEED_CLOSER'?5000:6000);card('wait','Looking again...');startLoop();}
+    else{const m=L()==='ta'?'தேதியைக் கண்டுபிடிக்க முடியவில்லை. யாரிடமாவது கேளுங்கள்.':'I could not find the date. Please ask someone to check.';card('warn',m,'ASK FOR HELP');say(m);}
   }
 }
 async function tick(){
   if(busy||!v.videoWidth)return; busy=true;
   try{
     const r=await post('/analyze',await snap(480,.6));
-    $('msg').textContent=r[L()];
+    const m=r[L()];
+    card('info',m,'ADJUST');
     const now=Date.now();
-    if(r.key!==last||now-lastT>4000){say(r[L()]);last=r.key;lastT=now;}
+    if(r.key!==last||now-lastT>4000){say(m);last=r.key;lastT=now;}
     okCount=r.key==='ok'?okCount+1:0;
-    if(okCount>=3){stopLoop();$('msg').textContent='Reading...';await handle(await post('/read',await snap(1600,.92)));}
-  }finally{busy=false;}
+    if(okCount>=3){stopLoop();card('wait','Reading... please hold still.','READING');await handle(await post('/read',await snap(1600,.92)));}
+  }catch(e){card('warn','Connection problem. Please try again.','ERROR');}
+  finally{busy=false;}
 }
 $('go').onclick=async()=>{
-  try{v.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});}catch(e){alert('Camera error: '+e.message+'. Use localhost/HTTPS or the upload box.');return;}
-  attempts=0;$('out').style.display='none';$('trace').textContent='';startLoop();
-  say(L()==='ta'?'தொடங்குகிறது':'Starting. Point the camera at the item.');
+  try{v.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});}
+  catch(e){card('warn','Camera could not start. Use the "Take or upload a photo" button instead.','CAMERA ERROR');return;}
+  $('camwrap').classList.add('on');
+  attempts=0;$('out').textContent='';$('trace').textContent='';startLoop();
+  const m=L()==='ta'?'தொடங்குகிறது':'Starting. Point the camera at the item.';
+  card('info',m,'STARTING');say(m);
 };
-$('up').onchange=async e=>{$('msg').textContent='Reading...';attempts=9;await handle(await post('/read',e.target.files[0]));};
-</script></body></html>
+$('up').onchange=async e=>{
+  if(!e.target.files[0])return;
+  card('wait','Reading... please wait.','READING');attempts=9;
+  try{await handle(await post('/read',e.target.files[0]));}catch(err){card('warn','Could not read the photo. Please try again.','ERROR');}
+};
+</script>
+</body>
+</html>
