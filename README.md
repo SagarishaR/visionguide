@@ -27,7 +27,7 @@
 | | |
 |---|---|
 | 🌐 **Live demo** | https://13.239.216.214:8443/ |
-| 🎥 **Demo video** | [YouTube link] |
+| 🎥 **Demo video** | https://youtu.be/GLsY5gY82nk |
 
 > The demo uses a self-signed HTTPS certificate, so your browser shows a warning the first time. Click **Advanced → Proceed** to continue. The camera needs HTTPS (or `localhost`) to work.
 
